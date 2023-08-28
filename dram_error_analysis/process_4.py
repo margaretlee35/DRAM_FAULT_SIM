@@ -22,7 +22,10 @@ def optimize_memoryid_dtype(df):
 # Function to load data and merge category
 def load_and_merge_data():
     # Load category data
-    category = pickle.load(open('category.pkl', 'rb'))
+    try:
+        category = pickle.load(open('manual_category.pkl', 'rb'))
+    except:
+        category = pickle.load(open('category.pkl', 'rb'))
     category = optimize_memoryid_dtype(category)
     permanancy = pickle.load(open('category.pkl', 'rb'))
 
