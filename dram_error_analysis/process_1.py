@@ -32,17 +32,20 @@ if __name__ == '__main__':
         with open('data_df.pkl', 'rb') as f:
             df = pickle.load(f)
     except:
-        df = df.compute()
+        df = df.head(100000)
+        #df = df.compute()
         with open('data_df.pkl', 'wb') as f:
             pickle.dump(df, f)
 
     try:
         transient_phy_res = pickle.load(open('transient_phy_res.pkl', 'rb'))
         permanent_phy_res = pickle.load(open('permanent_phy_res.pkl', 'rb'))
-    except:
+    except:       
         df = df.sort_values(by=['sid', 'memoryid', 'rankid', 'bankid', 'row', 'col','error_time']).reset_index(drop=True)
+        df = df[:100000]
         df = generate_min_max(df).reset_index(drop=True)
         df = groupby_machine_informations(df)
+        
 
         min_value = df.groupby(['sid','memoryid'])['error_time_min'].apply(lambda x: x.min()-x+x)
         max_value = df.groupby(['sid','memoryid'])['error_time_max'].apply(lambda x: x.max()-x+x)
