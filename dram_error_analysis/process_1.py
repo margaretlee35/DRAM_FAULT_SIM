@@ -32,8 +32,7 @@ if __name__ == '__main__':
         with open('data_df.pkl', 'rb') as f:
             df = pickle.load(f)
     except:
-        df = df.head(100000)
-        #df = df.compute()
+        df = df.compute()
         with open('data_df.pkl', 'wb') as f:
             pickle.dump(df, f)
 
@@ -42,7 +41,6 @@ if __name__ == '__main__':
         permanent_phy_res = pickle.load(open('permanent_phy_res.pkl', 'rb'))
     except:       
         df = df.sort_values(by=['sid', 'memoryid', 'rankid', 'bankid', 'row', 'col','error_time']).reset_index(drop=True)
-        df = df[:100000]
         df = generate_min_max(df).reset_index(drop=True)
         df = groupby_machine_informations(df)
         
