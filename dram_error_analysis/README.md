@@ -1,5 +1,11 @@
 # Project Instructions
+## Prerequisite
+Need to setup the environment using conda-requirements
 
+    
+    conda create --name dram_error --file conda-requirements.txt  
+    conda activate dram_error
+   
 This project involves running several processes to achieve the desired output. There are two main options to follow:
 
 ## Option 1: Direct Process
