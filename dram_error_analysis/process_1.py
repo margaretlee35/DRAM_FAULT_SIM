@@ -44,12 +44,15 @@ if __name__ == '__main__':
         df = generate_min_max(df).reset_index(drop=True)
         df = groupby_machine_informations(df)
         
-
-        min_value = df.groupby(['sid','memoryid'])['error_time_min'].apply(lambda x: x.min()-x+x)
-        max_value = df.groupby(['sid','memoryid'])['error_time_max'].apply(lambda x: x.max()-x+x)
-        diff_value = (max_value - min_value) < pd.Timedelta(24,'h')
-        transient_df = df[diff_value].reset_index(drop=True)
-        might_permanent_df = df[~diff_value].reset_index(drop=True)
+        min_value = df.groupby(['sid','memoryid'])['error_time_min'].apply(lambda x: x.min())
+        max_value = df.groupby(['sid','memoryid'])['error_time_max'].apply(lambda x: x.max())
+        diff_value = ((max_value - min_value) < pd.Timedelta(24,'h')).reset_index()
+        diff_value.columns = ['sid','memoryid','diff_max_min']
+        diff_df = df.merge(diff_value, on=['sid','memoryid'], how ='left')
+        transient_df = diff_df[diff_df['diff_max_min'] == True].reset_index(drop=True)
+        might_permanent_df = diff_df[diff_df['diff_max_min'] == False].reset_index(drop=True)
+        transient_df = transient_df.drop(columns='diff_max_min')
+        might_permanent_df = might_permanent_df.drop(columns='diff_max_min')
 
         ifeature_vector_df = transient_df.groupby(['sid', 'memoryid']).agg({'rankid': list, 'bankid': list, 'row': list, 'col': list, 'error_time_min': list, 'error_time_max': list, 'DRAM_model': list})
         ifeature_vector_df['DRAM_model'] = ifeature_vector_df['DRAM_model'].apply(lambda x: x[0])
