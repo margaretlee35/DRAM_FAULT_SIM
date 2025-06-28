@@ -4,6 +4,9 @@ Need to setup the environment using conda-requirements
 
     
     conda create --name dram_error --file conda-requirements.txt  
+    (update on Jun 2025, create env with  environment.yml instead of conda-requirements.txt)
+    conda env create -f environment.yml
+
     conda activate dram_error
    
 This project involves running several processes to achieve the desired output. There are two main options to follow:

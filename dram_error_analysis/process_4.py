@@ -182,14 +182,11 @@ def plot_cluster(cluster,DRAM_MODEL,feature_vector_df, _category):
 
 
 # Load using pyarrow
-try:
-    #assert()
+if os.path.exists('feature_vector_df.parquet'):
     arrow_table = pq.read_table('feature_vector_df.parquet')
-
     # Convert the Arrow Table back to a pandas DataFrame
     feature_vector_df = arrow_table.to_pandas()
-
-except:
+else:
     # Load data
     df_original, category, trouble_tickets = load_and_merge_data()
 

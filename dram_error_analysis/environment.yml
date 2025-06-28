@@ -1,0 +1,40 @@
+
+name: dram_error
+channels:
+  - conda-forge
+  - pytorch
+  - nvidia
+  - defaults
+dependencies:
+  - python=3.10
+  - numpy
+  - pandas
+  - matplotlib
+  - seaborn
+  - scikit-learn
+  - dask
+  - distributed
+  - jinja2
+  - pyarrow
+  - pip
+  - mkl
+  - mkl-service
+  - mkl_random
+  - mkl_fft
+  - pytorch=2.2.2
+  - torchvision=0.17.2
+  - pytorch-cuda=11.8  # or remove if CPU-only
+  - pip:
+      - lifelines
+      - swifter
+      - easydict
+      - autograd
+      - autograd-gamma
+      - matplotlib-label-lines
+      - formulaic
+      - plotly
+      - tenacity
+      - wrapt
+      - future
+      - graphlib-backport
+ 

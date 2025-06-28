@@ -72,7 +72,7 @@ def find_multisocket(df):
 
 def make_decision(feature_vector_df,msocket = True, mrank=True):
     testdf = feature_vector_df.swifter.apply(lambda x: list(zip(x['row'], x['col'],x['rankid'],x['bankid'])), axis=1)
-    testdf = testdf.swifter.apply(lambda x: set(x)).apply(len)
+    testdf = testdf.swifter.apply(lambda x: len(set(x)))
 
     multiple_single_bit_failures = feature_vector_df[testdf <= 2]
     multi_bit_failures = feature_vector_df[testdf > 2]
@@ -110,7 +110,7 @@ def make_decision(feature_vector_df,msocket = True, mrank=True):
     multi_bank = single_rank[(single_rank['bankid'].swifter.apply(lambda x: len(set(x)))>1 )]
 
     # if feature_vector_df is dask dataframe, then compute it
-    if feature_vector_df.__class__ == dask.dataframe.core.DataFrame:
+    if isinstance(feature_vector_df, dd.DataFrame):
         with dask.diagnostics.ProgressBar():
             multiple_single_bit_failures, single_rank, single_column, single_row, single_bank, multi_bank, multi_bit_failures \
             = dask.compute(multiple_single_bit_failures, single_rank, single_column, single_row, single_bank, multi_bank, multi_bit_failures)
