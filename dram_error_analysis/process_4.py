@@ -143,9 +143,12 @@ def plot_cluster(cluster,DRAM_MODEL,feature_vector_df, _category):
             continue
         print(f'{_category}/{cluster}/{row["DRAM_model"]}/{row["sid"]}_{row["memoryid"]}.png')
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18.5, 10.5))
-        fig.suptitle('row, col, bank, rank, evnts, first_time, last_time\n {}, {}, {}, {}, {}, {}, {}\n{}   {}\nMachine_vender:{} {}'.format(
+        fig.suptitle('unique row, col, bank, rank, evnts, first_time, last_time\n {}, {}, {}, {}, {}, {}, {}\n{}   {}\nMachine_vender:{} {}'.format(
             row['uniq_rows'], row['uniq_cols'], row['uniq_banks'], row['uniq_ranks'], row['uniq_events'], min(row['error_time_min']), max(row['error_time_max']),row['failed_time'],row["error_type"],
             row["server_manufacturer"], row["failure_type"]))
+
+        max_row_ddr4 = 2**17
+        max_col_ddr4 = 2**10
 
         # draw a grid on y axis for every 2048 rows.
         ax1.yaxis.set_ticks(np.arange(0, max(row['row']) + 512, 2048))
@@ -165,16 +168,21 @@ def plot_cluster(cluster,DRAM_MODEL,feature_vector_df, _category):
             ax2.scatter(col_filter[bank_filter & (np.array(row['rankid']) == 1)], row_filter[bank_filter & (np.array(row['rankid']) == 1)], label=f'bank {bank}')
         
         # set plot limits
-        xlim = [min(row['col']) - 8, max(row['col']) + 8]
-        ylim = [min(row['row']) - 8, max(row['row']) + 8]
+        #xlim = [min(row['col']) - 8, max(row['col']) + 8]
+        ylim = [min(row['row']) - 1024, max(row['row']) + 1024]
+        xlim = [0 - 8, max_col_ddr4 + 8]
+        #ylim = [0 - 8, max_row_ddr4 + 8]
+        assert(max(row['col']) <= max_col_ddr4)
+        assert(max(row['row']) <= max_row_ddr4)
+
         ax1.set_xlim(xlim)
         ax1.set_ylim(ylim)
         ax2.set_xlim(xlim)
         ax2.set_ylim(ylim)
 
         # place the legend outside the plot on the bottom mid
-        ax1.legend(loc='upper center', bbox_to_anchor=(0.5, -0.05), fancybox=True, shadow=True, ncol=5)
-        ax2.legend(loc='upper center', bbox_to_anchor=(0.5, -0.05), fancybox=True, shadow=True, ncol=5)
+        #ax1.legend(loc='upper center', bbox_to_anchor=(0.5, -0.05), fancybox=True, shadow=True, ncol=5)
+        #ax2.legend(loc='upper center', bbox_to_anchor=(0.5, -0.05), fancybox=True, shadow=True, ncol=5)
         
         fig.savefig(f'kmeans_no_msocket/{_category}/{cluster}/{row["DRAM_model"]}/{row["sid"]}_{row["memoryid"]}.png')
         plt.close(fig)

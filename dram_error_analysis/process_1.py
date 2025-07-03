@@ -2,8 +2,9 @@ import pandas as pd
 import numpy as np
 import pickle
 import dask.dataframe as dd
+import os
 
-from utils import groupby_machine_informations, make_decision, generate_min_max
+from utils import groupby_machine_informations, make_decision, generate_min_max, format_results
 
 def load_csv(filename):
     '''Load csv and return a dataframe.'''
@@ -13,7 +14,7 @@ def load_csv(filename):
 if __name__ == '__main__':
     trouble_tickets = pd.read_csv('trouble_tickets.csv')
     trouble_tickets.to_pickle('trouble_tickets.pkl')
-    df = load_csv('mcelog.csv')
+    df = load_csv('mcelog.part.csv')
     date = df['error_time'].apply(lambda x: '-'.join(x.split('-')[:3]), meta=('error_time', 'str'))
 
     date = date.apply(lambda x: x.replace('0001-01', '2019-10'), meta=('error_time', 'str'))
@@ -28,32 +29,36 @@ if __name__ == '__main__':
     df['error_time'] = date
     df['error_time'] = dd.to_datetime(df['error_time'])
 
-    try:
+    if os.path.exists('data_df.pkl'):
         with open('data_df.pkl', 'rb') as f:
             df = pickle.load(f)
-    except:
+    else:
         df = df.compute()
         with open('data_df.pkl', 'wb') as f:
             pickle.dump(df, f)
 
-    try:
+    if os.path.exists('transient_df.pkl') and os.path.exists('might_permanent_df.pkl'):
         transient_phy_res = pickle.load(open('transient_phy_res.pkl', 'rb'))
         permanent_phy_res = pickle.load(open('permanent_phy_res.pkl', 'rb'))
-    except:       
+    else:       
         df = df.sort_values(by=['sid', 'memoryid', 'rankid', 'bankid', 'row', 'col','error_time']).reset_index(drop=True)
         df = generate_min_max(df).reset_index(drop=True)
         df = groupby_machine_informations(df)
         
+        # group by sid and memoryid, and calculate the min and max error_time
         min_value = df.groupby(['sid','memoryid'])['error_time_min'].apply(lambda x: x.min())
         max_value = df.groupby(['sid','memoryid'])['error_time_max'].apply(lambda x: x.max())
         diff_value = ((max_value - min_value) < pd.Timedelta(24,'h')).reset_index()
         diff_value.columns = ['sid','memoryid','diff_max_min']
         diff_df = df.merge(diff_value, on=['sid','memoryid'], how ='left')
+
+        # classify the errors of sid & memoryid group into transient / might permanent
         transient_df = diff_df[diff_df['diff_max_min'] == True].reset_index(drop=True)
         might_permanent_df = diff_df[diff_df['diff_max_min'] == False].reset_index(drop=True)
         transient_df = transient_df.drop(columns='diff_max_min')
         might_permanent_df = might_permanent_df.drop(columns='diff_max_min')
 
+        # make feature vectors for transient and might permanent errors
         ifeature_vector_df = transient_df.groupby(['sid', 'memoryid']).agg({'rankid': list, 'bankid': list, 'row': list, 'col': list, 'error_time_min': list, 'error_time_max': list, 'DRAM_model': list})
         ifeature_vector_df['DRAM_model'] = ifeature_vector_df['DRAM_model'].apply(lambda x: x[0])
         ifeature_vector_df = ifeature_vector_df.reset_index()
@@ -64,6 +69,7 @@ if __name__ == '__main__':
         pfeature_vector_df = pfeature_vector_df.reset_index()
         pfeature_vector_df = pfeature_vector_df[(pfeature_vector_df['DRAM_model']!="B2") & (pfeature_vector_df['DRAM_model']!="B3")]
 
+        # make decisions based on the feature vectors
         transient_log_res, transient_phy_res = make_decision(ifeature_vector_df)
         permanent_log_res, permanent_phy_res = make_decision(pfeature_vector_df)
 
