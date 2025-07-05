@@ -9,9 +9,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 
-from utils import generate_min_max
-from utils import groupby_machine_informations
-from utils import make_decision
+from utils_new import groupby_machine_informations, make_decision, generate_min_max
 
 
 # Function to optimize the memoryid data type

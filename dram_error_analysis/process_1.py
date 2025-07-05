@@ -4,7 +4,7 @@ import pickle
 import dask.dataframe as dd
 import os
 
-from utils import groupby_machine_informations, make_decision, generate_min_max, format_results
+from utils_new import groupby_machine_informations, make_decision, generate_min_max
 
 def load_csv(filename):
     '''Load csv and return a dataframe.'''
@@ -14,7 +14,7 @@ def load_csv(filename):
 if __name__ == '__main__':
     trouble_tickets = pd.read_csv('trouble_tickets.csv')
     trouble_tickets.to_pickle('trouble_tickets.pkl')
-    df = load_csv('mcelog.part.csv')
+    df = load_csv('mcelog.csv')
     date = df['error_time'].apply(lambda x: '-'.join(x.split('-')[:3]), meta=('error_time', 'str'))
 
     date = date.apply(lambda x: x.replace('0001-01', '2019-10'), meta=('error_time', 'str'))
@@ -87,3 +87,5 @@ if __name__ == '__main__':
     category.reset_index(drop=True, inplace=True)
     with open('category.pkl', 'wb') as f:
         pickle.dump(category, f)
+    #with open('category1.csv', 'w') as f:
+    #    category.to_csv(f, index=False)

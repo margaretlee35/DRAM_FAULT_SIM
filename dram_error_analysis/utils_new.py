@@ -9,6 +9,8 @@ import dask.dataframe as dd
 import dask.diagnostics
 import swifter
 
+MAX_MAT_ROWS = 2**10
+
 def generate_min_max(df):
     df = df.groupby(['sid','memoryid', 'rankid', 'bankid', 'row', 'col'])['error_time'].agg(['min', 'max', 'count'])
     df = df.rename(columns={'min': 'error_time_min', 'max': 'error_time_max'})    
@@ -68,15 +70,14 @@ def find_multisocket(df):
     multi_socket = multi_socket.join(iterations.set_index(['sid','memoryid']), on=['sid','memoryid'], how='inner')
     return multi_socket.reset_index(drop=True)
 
-
-
-def make_decision(feature_vector_df,msocket = True, mrank=True):
+def decide_logical_fault_category(feature_vector_df, msocket=True, mrank=True):
     testdf = feature_vector_df.swifter.apply(lambda x: list(zip(x['row'], x['col'],x['rankid'],x['bankid'])), axis=1)
     testdf = testdf.swifter.apply(lambda x: len(set(x)))
 
     multiple_single_bit_failures = feature_vector_df[testdf <= 2]
     multi_bit_failures = feature_vector_df[testdf > 2]
     multi_bit_failures = multi_bit_failures.reset_index(drop=True)
+
     if msocket:
         try:
             multi_socket_multibits = multi_bit_failures.groupby(['sid']).agg({'memoryid': list})
@@ -104,10 +105,10 @@ def make_decision(feature_vector_df,msocket = True, mrank=True):
     else:
         single_rank = multi_bit_failures
     single_rank = single_rank.reset_index(drop=True)
-    single_column = single_rank[single_rank['col'].swifter.apply(lambda x: len(set(x)))==1 & (single_rank['bankid'].swifter.apply(lambda x: len(set(x)))==1)]
-    single_row = single_rank[single_rank['row'].swifter.apply(lambda x: len(set(x)))==1 & (single_rank['bankid'].swifter.apply(lambda x: len(set(x)))==1)]
-    single_bank = single_rank[(single_rank['col'].swifter.apply(lambda x: len(set(x)))>1 ) & (single_rank['row'].swifter.apply(lambda x: len(set(x)))>1 ) & (single_rank['bankid'].apply(lambda x: len(set(x)))==1)]
-    multi_bank = single_rank[(single_rank['bankid'].swifter.apply(lambda x: len(set(x)))>1 )]
+    single_column = single_rank[mask_unique(single_rank, 'col', eq_count=1) & mask_unique(single_rank, 'bankid', eq_count=1)]
+    single_row = single_rank[mask_unique(single_rank, 'row', eq_count=1) & mask_unique(single_rank, 'bankid', eq_count=1)]
+    single_bank = single_rank[mask_unique(single_rank, 'col', min_gt_count=1) & mask_unique(single_rank, 'row', min_gt_count=1) & mask_unique(single_rank, 'bankid', eq_count=1)]
+    multi_bank = single_rank[mask_unique(single_rank, 'bankid', min_gt_count=1)]
 
     # if feature_vector_df is dask dataframe, then compute it
     if isinstance(feature_vector_df, dd.DataFrame):
@@ -123,7 +124,7 @@ def make_decision(feature_vector_df,msocket = True, mrank=True):
     
     if mrank:
         single_rank = single_rank[~single_rank.index.isin(multi_socket.index)]
-        multi_rank = multi_bit_failures[multi_bit_failures['rankid'].swifter.apply(lambda x: len(set(x))) > 1]
+        multi_rank = multi_bit_failures[mask_unique(multi_bit_failures, 'rankid', min_gt_count=1)]
         multi_rank = multi_rank.reset_index(drop=True)
     else:
         multi_rank = pd.DataFrame(columns=multi_bit_failures.columns)
@@ -133,26 +134,106 @@ def make_decision(feature_vector_df,msocket = True, mrank=True):
     
     logical_result = {'single_rank': single_rank.copy(), 'multi_rank': multi_rank.copy(), 'multi_bank': multi_bank.copy(), 'multi_socket': multi_socket.copy(), 'single_bank': single_bank.copy(), 'single_row': single_row.copy(), 'single_column': single_column.copy(), 'multiple_single_bit_failures': multiple_single_bit_failures.copy()}
 
-    # single row error
-    local_wordline = single_row
-    # single sense amplifier error means two clusters of error. 
-    # first, remove local bitline error
-    single_sense_amp = single_column.copy()
-    # single_sense_amp, single_sbl_column, not_clustered_single_column
-    single_sense_amp = single_sense_amp[single_sense_amp['row'].swifter.apply(lambda x: len(set(x))) <= 2**11]
-    single_sense_amp = single_sense_amp[single_sense_amp['row'].swifter.apply(lambda x: np.array(x)[np.array(x) > min(x)+2**10]).swifter.apply(lambda x: max(x)-min(x) if len(x)>0 else 0) <= 2**10]
-    single_sense_amp = single_sense_amp[single_sense_amp['row'].swifter.apply(lambda x: max(x)-min(x)) <= 2**16]
-    not_clustered_single_column = single_column[ ~single_column.index.isin(single_sense_amp.index)]
+    return logical_result
 
-    # single column caused by column decoder
-    # is there any error after 64k from the min error?
-    decoder_single_col = not_clustered_single_column[not_clustered_single_column['row'].swifter.apply(lambda x: np.array(x)-min(x)).swifter.apply(lambda x: max(x)-min(x)) >= 63*1024]
-    not_clustered_single_column = not_clustered_single_column[ ~not_clustered_single_column.index.isin(decoder_single_col.index)]
+def safe_min(seq):
+    return min(seq) if len(seq)>0 else 0
+
+def safe_max(seq):
+    return max(seq) if len(seq)>0 else 0
+
+def count_unique(seq):
+    return len(set(seq))
+
+def span(seq):
+    return max(seq) - min(seq)
+
+def mask_unique(df, entry, *, eq_count= None, max_count=None, min_gt_count=None):
+    """
+    Return a boolean mask where:
+      - max_equal: count_unique ≤ max_equal
+      - min_gt:  count_unique > min_gt
+    """
+    s = df[entry].swifter.apply(count_unique)
+    mask = pd.Series(True, index=df.index)
+    if eq_count is not None:
+        mask &= (s == eq_count)
+    if max_count is not None:
+        mask &= (s <= max_count)
+    if min_gt_count is not None:
+        mask &= (s > min_gt_count)
+    return mask
+
+def mask_span(df, entry, *, eq_span=None, max_span=None, min_span=None):
+    """
+    Return a boolean mask where:
+      - span ≤ max_span
+      - span ≥ min_span
+    """
+    s = df[entry].swifter.apply(span)
+    mask = pd.Series(True, index=df.index)
+    if eq_span is not None:
+        mask &= (s == eq_span)
+    if max_span is not None:
+        mask &= (s <= max_span)
+    if min_span is not None:
+        mask &= (s >= min_span)
+    return mask 
+
+def split_on_mask(df, mask):
+    """
+    Return (df_true, df_false) where mask is a boolean Series
+    """
+    return df[mask], df[~mask]
+
+def make_empty_fault_df() -> pd.DataFrame:
+    physical_fault_cols = [
+        'sid','memoryid','rankid','bankid',
+        'row','col','error_time_min','error_time_max','DRAM_model'
+    ]
+    return pd.DataFrame(columns=physical_fault_cols)
+
+
+def decide_physical_fault_category(logical_result):
+    single_rank = logical_result['single_rank']
+    multi_rank = logical_result['multi_rank']
+    multi_bank = logical_result['multi_bank']
+    multi_socket = logical_result['multi_socket']
+    single_bank = logical_result['single_bank']
+    single_column = logical_result['single_column']
+    single_row = logical_result['single_row']
+    multiple_single_bit = logical_result['multiple_single_bit_failures']
+
+    #########################
+    # classify single_row
+    #########################
+    # local wordline error: single row in 1 mat
+    local_wordline = single_row
+
+
+    #########################
+    # classify single_column
+    # -------> single_sense_amp / decoder_single_col / single_csl_column / not_clustered_single_column
+    #########################
+    # single sense amplifier error : single col in 2 vertically-adjacent mats
+        # first, remove local bitline error
+    mask_ssa = mask_unique(single_column, 'row', max_count=MAX_MAT_ROWS*2)
+    upper_cluster = single_column['row'].swifter.apply(lambda x: np.array(x)[np.array(x) > min(x)+MAX_MAT_ROWS])
+    mask_ssa &= ( upper_cluster.swifter.apply(lambda x: max(x)-min(x) if len(x)>0 else 0) <= MAX_MAT_ROWS )
+    mask_ssa &= mask_span(single_column, 'row', max_span=2**16)
+    single_sense_amp, not_clustered_single_column = split_on_mask(single_column, mask_ssa)
+
+    # decoder single column : 
+        # single column caused by column decoder
+        # is there any error after 64k from the min error
+    mask_dsc = mask_span(not_clustered_single_column, 'row', min_span=63*1024)
+    decoder_single_col, not_clustered_single_column = split_on_mask(not_clustered_single_column, mask_dsc)
     
     # single_csl_column <==> Remapping logics in csl (subbank 16K granularity failure based on histogram of max - min)
-    single_csl_column = not_clustered_single_column[(not_clustered_single_column['row'].swifter.apply(lambda x: max(x)-min(x)) <= 2**14+1024 ) |\
-         (((not_clustered_single_column.DRAM_model == ('A1'))|(not_clustered_single_column.DRAM_model == ('A2')))  \
-            & (not_clustered_single_column['row'].swifter.apply(lambda x:max(x)-min(x)) <= 2**13+1024 ))]
+    mask_scc = mask_span(not_clustered_single_column,'row', max_span=2**14+1024)
+    mask_scc |= ((not_clustered_single_column.DRAM_model == ('A1'))|(not_clustered_single_column.DRAM_model == ('A2')))  \
+            & mask_span(not_clustered_single_column, 'row', max_span=2**13+1024)
+    single_csl_column, not_clustered_single_column = split_on_mask(not_clustered_single_column, mask_scc)
     '''
     single_csl_column =\
             single_csl_column[single_csl_column['row'].apply(lambda x: np.array(x)[np.array(x) > min(x)+2**11])\
@@ -160,132 +241,138 @@ def make_decision(feature_vector_df,msocket = True, mrank=True):
                 .apply(lambda x: np.array(x)[np.array(x) > min(x)+2**11] if x.any() else np.array([0]))\
                     .apply(lambda x: np.array(x)[np.array(x) > min(x)+2**11] if x.any() else np.array([0])).apply(len) <= 2]
     '''
-    not_clustered_single_column = not_clustered_single_column[~not_clustered_single_column.index.isin(single_csl_column.index)]
-    try:
-        local_wordline_two_clusters = single_bank[single_bank['row'].swifter.apply(lambda x: len(set(x)) == 2)]
-        local_wordline_two_clusters = local_wordline_two_clusters[local_wordline_two_clusters['col'].swifter.apply(lambda x: len(set(x))) > 2]
-        local_wordline_two_clusters = local_wordline_two_clusters[local_wordline_two_clusters['row'].swifter.apply(lambda x: (max(x)-min(x) >= 2**16) & (max(x)-min(x) <= 2**16))]
 
-        single_bank = single_bank[~single_bank.index.isin(local_wordline_two_clusters.index)]
+    #############################
+    # classify single_bank
+    # -------> local_workdline_two_clusters, consequtive_rows, subarray_row_decoder, \
+    #            subarray_row_decoder_two_clusters, lwl_sel, lwl_sel2, global_row_decoder_two_clusters, \
+    #            decoder_multi_col, single_csl_bank, multi_csls
+    ###########################
+    # local wordline two clusters :
+    try:
+        mask_lwltc = mask_unique(single_bank, 'row', eq_count=2)
+        mask_lwltc &= mask_unique(single_bank, 'col', min_gt_count=2)
+        mask_lwltc &= mask_span(single_bank, 'row', eq_span=2**16)
+        local_wordline_two_clusters, single_bank = split_on_mask(single_bank, mask_lwltc)
+
     except:
-        local_wordline_two_clusters = pd.DataFrame(columns=['sid','memoryid','rankid','bankid','row','col','error_time_min','error_time_max','DRAM_model'])
+        local_wordline_two_clusters = make_empty_fault_df()
 
-    # single bank, multi row
-    # subarray row decoder, global row decoder, local word line select generator
+        # single bank, multi row
+        # subarray row decoder, global row decoder, local word line select generator
 
-    # consequtive_rows is part of single row error
+    # consequtive rows:
+        # consequtive_rows is part of single row error
     try:
-        consequtive_rows = single_bank[(single_bank['row'].swifter.apply(lambda x: max(x)-min(x)) <= 4)]
-        consequtive_rows = consequtive_rows[consequtive_rows['col'].swifter.apply(lambda x: len(set(x))) > 2]
-        single_bank = single_bank[~single_bank.index.isin(consequtive_rows.index)]
+        mask_cr = mask_span(single_bank, 'row', max_span=4)
+        mask_cr &= mask_unique(single_bank, 'col', min_gt_count=2)
+        consequtive_rows, single_bank = split_on_mask(single_bank, mask_cr)
     except:
-        consequtive_rows = pd.DataFrame(columns=['sid','memoryid','rankid','bankid','row','col','error_time_min','error_time_max','DRAM_model'])
+        consequtive_rows = make_empty_fault_df()
 
     try:
-        subarray_row_decoder = single_bank[(single_bank['row'].swifter.apply(lambda x: max(x)-min(x)) <= 2**10)] # 2**17 / 32 (number of subarray)
-        subarray_row_decoder = subarray_row_decoder[subarray_row_decoder['col'].swifter.apply(lambda x: len(set(x))) > 2] # 2**17 / 32 (number of subarray)
-        not_clustered_single_bank = single_bank[~single_bank.index.isin(subarray_row_decoder.index)]
+        mask_srd = mask_span(single_bank, 'row', max_span=2**10)
+        mask_srd &= mask_unique(single_bank, 'col', min_gt_count=2)
+        subarray_row_decoder, ncsb = split_on_mask(single_bank, mask_srd)
     except:
-        subarray_row_decoder = pd.DataFrame(columns=['sid','memoryid','rankid','bankid','row','col','error_time_min','error_time_max','DRAM_model'])
+        subarray_row_decoder = make_empty_fault_df()
 
+    # ncsb stands for not_clustered_single_bank
     try:
-        subarray_row_decoder_two_clusters = not_clustered_single_bank[not_clustered_single_bank['col'].swifter.apply(lambda x: len(set(x))) > 2]
-        subarray_row_decoder_two_clusters = subarray_row_decoder_two_clusters[\
-            subarray_row_decoder_two_clusters['row'].swifter.apply(lambda x: np.array(x)[min(np.array(x)[np.array(x) >= min(x)+2**10])-x>= 62*1024]).apply(len) > 0]
-        not_clustered_single_bank = single_bank[~single_bank.index.isin(subarray_row_decoder.index) & ~single_bank.index.isin(subarray_row_decoder_two_clusters.index)]
+        mask_srdtc = mask_unique(ncsb, 'col', min_gt_count=2)
+        upper_cluster = ncsb['row'].swifter.apply(lambda x: np.array(x)[np.array(x) >= min(x)+2**10])
+        mask_srdtc &= (upper_cluster.swifter.apply(safe_min) - ncsb['row'].swifter.apply(safe_min) >= 62*1024)
+        subarray_row_decoder_two_clusters, ncsb = split_on_mask(ncsb, mask_srdtc)
     except:
-        subarray_row_decoder_two_clusters = pd.DataFrame(columns=['sid','memoryid','rankid','bankid','row','col','error_time_min','error_time_max','DRAM_model'])
+        subarray_row_decoder_two_clusters = make_empty_fault_df()
 
     try:
-        if not_clustered_single_bank.empty:
-            lwl_sel = not_clustered_single_bank
-        else:
-            lwl_sel = not_clustered_single_bank[not_clustered_single_bank['row'].swifter.apply(lambda x: len(set(x))>2)]
-        lwl_sel = lwl_sel[lwl_sel.col.swifter.apply(lambda x: len(set(x))) > 2]
+        mask_ls = mask_unique(ncsb, 'row', min_gt_count=2)
+        mask_ls &= mask_unique(ncsb, 'col', min_gt_count=2)
+
         # range from 0 to 64 and 1023 to 1023-64
         # 64 come from the fact that MWL is 64. when FX is wrong, it will be repeated, and 64 is the maximum for error region
         rng = [ i for i in range(0,64)] + [i for i in range(1024-1,1024-1-64,-1)]
-        lwl_sel = lwl_sel[lwl_sel.row.swifter.apply(lambda x: sorted(list(set(x)))).swifter.apply(lambda x: set(np.diff(x)%(2**10))).swifter.apply(lambda x: all([i in [j for j in rng] for i in x]))]
+        mask_ls &= ncsb['row'].swifter.apply(lambda x: sorted(set(x))).swifter.apply(lambda x: set(np.diff(x)%(2**10))).swifter.apply(lambda x: all([i in [j for j in rng] for i in x]))
 
         # Needs to span for 64k rows
-        lwl_sel = lwl_sel[lwl_sel.row.swifter.apply(lambda x: max(x)-min(x) >= 2**16)]
-        not_clustered_single_bank = not_clustered_single_bank[~not_clustered_single_bank.index.isin(lwl_sel.index)]
+        mask_ls &= mask_span(ncsb, 'row', min_span=2**16)
+        lwl_sel, ncsb = split_on_mask(ncsb, mask_ls)
     except:
-        lwl_sel = pd.DataFrame(columns=['sid','memoryid','rankid','bankid','row','col','error_time_min','error_time_max','DRAM_model'])
+        lwl_sel = make_empty_fault_df()
+    
     # subbank and subarray level repeat
     try:
-        lwl_sel2 = not_clustered_single_bank[not_clustered_single_bank['row'].swifter.apply(lambda x: len(set(x))>2)]
-        lwl_sel2 = lwl_sel2[lwl_sel2.col.swifter.apply(lambda x: len(set(x))) > 2]
+        mask_ls2 = mask_unique(ncsb, 'row', min_gt_count=2)
+        mask_ls2 &= mask_unique(ncsb, 'col', min_gt_count=2)
+
         # range from 0 to 1024 and 16k to 16k-1024
         rng = [ i for i in range(0,1024)] + [i for i in range(2**14-1,2**14-1-1024,-1)]
-        lwl_sel2 = lwl_sel2[lwl_sel2.row.swifter.apply(lambda x: sorted(list(set(x)))).swifter.apply(lambda x: set(np.diff(x)%(2**14))).swifter.apply(lambda x: all([i in [j for j in rng] for i in x]))]
+        mask_ls2 &= ncsb['row'].swifter.apply(lambda x: sorted(set(x))).swifter.apply(lambda x: set(np.diff(x)%(2**14))).swifter.apply(lambda x: all([i in [j for j in rng] for i in x]))
         
         # Needs to span for 64k rows
-        lwl_sel2 = lwl_sel2[lwl_sel2.row.swifter.apply(lambda x: max(x)-min(x) >= 2**16)]
-        not_clustered_single_bank = not_clustered_single_bank[~not_clustered_single_bank.index.isin(lwl_sel2.index)]
+        mask_ls2 &= mask_span(ncsb, 'row', min_span=2**16)
+        lwl_sel2, ncsb = split_on_mask(ncsb, mask_ls2)
     except:
-        lwl_sel2 = pd.DataFrame(columns=['sid','memoryid','rankid','bankid','row','col','error_time_min','error_time_max','DRAM_model'])
+        lwl_sel2 = make_empty_fault_df()
 
     try:
-        global_row_decoder_two_clusters = not_clustered_single_bank[not_clustered_single_bank['col'].swifter.apply(lambda x: len(set(x))) > 2]
-        #global_row_decoder_two_clusters = global_row_decoder_two_clusters[\
-        #    global_row_decoder_two_clusters['row'].swifter.apply(lambda x:min(np.array(x)[np.array(x) >= min(x)+16*1024])-x).swifter.apply(lambda x: np.array(x)[x>0]).swifter.apply(lambda x: x>=62*1024).swifter.apply(all)]
-        upper_cluster = global_row_decoder_two_clusters['row'].swifter.apply(lambda x:np.array(x)[np.array(x) >= min(x)+16*1024])
-        global_row_decoder_two_clusters = global_row_decoder_two_clusters[upper_cluster.swifter.apply(lambda x: len(x) > 0)]
-        min_upper_cluster = upper_cluster.swifter.apply(lambda x: min(x) if len(x)>0 else 0)
-        temp1 = global_row_decoder_two_clusters.apply(lambda row: min_upper_cluster[row.name] - np.array(row['row']), axis=1)
-        temp2 = temp1.swifter.apply(lambda x: np.array(x)[x>0])
-        temp3 = temp2.swifter.apply(lambda x: x>=62*1024)
-        temp4 = temp3.swifter.apply(all)
-        global_row_decoder_two_clusters = global_row_decoder_two_clusters[temp4]
-        not_clustered_single_bank = not_clustered_single_bank[ ~not_clustered_single_bank.index.isin(global_row_decoder_two_clusters.index)]
+        mask_grdtc = mask_unique(ncsb, 'col', min_gt_count=2)
+        upper_cluster = ncsb['row'].swifter.apply(lambda x: np.array(x)[np.array(x) >= min(x)+16*1024])
+        lower_cluster = ncsb['row'].swifter.apply(lambda x: np.array(x)[np.array(x) < min(x)+16*1024])
+        mask_grdtc &= ( upper_cluster.swifter.apply(safe_min) - lower_cluster.swifter.apply(safe_max) >= 62*1024 )
+        #mask_grdtc &= ncsb['row'].swifter.apply(lambda x:min(np.array(x)[np.array(x) >= min(x)+16*1024])-x.swifter.apply(lambda x: np.array(x)[x>0]).swifter.apply(lambda x: x>=62*1024).swifter.apply(all)
+        global_row_decoder_two_clusters, ncsb = split_on_mask(ncsb, mask_grdtc)
     except:
-        global_row_decoder_two_clusters = pd.DataFrame(columns=['sid','memoryid','rankid','bankid','row','col','error_time_min','error_time_max','DRAM_model'])
+        global_row_decoder_two_clusters = make_empty_fault_df()
 
     # single bank, multi column
     try:
-        decoder_multi_col = not_clustered_single_bank
-        temp = decoder_multi_col['row'].swifter.apply(min)
-        decoder_multi_col = decoder_multi_col[decoder_multi_col['row'].swifter.apply(lambda x: np.array(x)[np.array(x) >= min(x)+2**14]).swifter.apply(lambda x: min(x) if len(x)>0 else 0)-temp >= 63*1024]
-        decoder_multi_col = decoder_multi_col[decoder_multi_col['col'].swifter.apply(lambda x: len(set(x))) == 2]
-        not_clustered_single_bank = not_clustered_single_bank[~not_clustered_single_bank.index.isin(decoder_multi_col.index)]
+        upper_cluster = ncsb['row'].swifter.apply(lambda x: np.array(x)[np.array(x) >= min(x)+2**14])
+        mask_dmc = (upper_cluster.swifter.apply(safe_min) - ncsb['row'].swifter.apply(safe_min) >= 63*1024)
+        mask_dmc &= mask_unique(ncsb, 'col', eq_count=2)
+        decoder_multi_col, ncsb = split_on_mask(ncsb, mask_dmc)
     except:
-        decoder_multi_col = pd.DataFrame(columns=['sid','memoryid','rankid','bankid','row','col','error_time_min','error_time_max','DRAM_model'])
+        decoder_multi_col = make_empty_fault_df()
     
     try:
-        single_csl_bank = not_clustered_single_bank[(not_clustered_single_bank['row'].apply(lambda x: max(x)-min(x)) <= 2**14+1024 ) |\
-         (((not_clustered_single_bank.DRAM_model == ('A1'))|(not_clustered_single_bank.DRAM_model == ('A2')))  \
-            & (not_clustered_single_bank['row'].apply(lambda x:max(x)-min(x)) <= 2**13+1024 ))]
-
-        single_csl_bank = single_csl_bank[single_csl_bank['col'].apply(lambda x: len(set(x)))==2]
-        not_clustered_single_bank = not_clustered_single_bank[~not_clustered_single_bank.index.isin(single_csl_bank.index)]
+        mask_scb = mask_span(ncsb, 'row', max_span=2**14+1024)
+        mask_scb |= (((ncsb.DRAM_model == ('A1'))|(ncsb.DRAM_model == ('A2')))  \
+            & mask_span(ncsb, 'row', max_span=2**13+1024 ))
+        mask_scb &= mask_unique(ncsb, 'col', eq_count=2)
+        single_csl_bank, ncsb = split_on_mask(ncsb, mask_scb)
     except:
-        single_csl_bank = pd.DataFrame(columns=['sid','memoryid','rankid','bankid','row','col','error_time_min','error_time_max','DRAM_model'])
+        single_csl_bank = make_empty_fault_df()
     
     try:
-        mutli_csls = not_clustered_single_bank[(not_clustered_single_bank['row'].apply(lambda x: max(x)-min(x)) <= 2**14+1024 ) |\
-         (((not_clustered_single_bank.DRAM_model == ('A1'))|(not_clustered_single_bank.DRAM_model == ('A2')))  \
-            & (not_clustered_single_bank['row'].apply(lambda x:max(x)-min(x)) <= 2**13+1024 ))]
-        not_clustered_single_bank = not_clustered_single_bank[~not_clustered_single_bank.index.isin(mutli_csls.index)]
+        mask_mc = mask_span(ncsb, 'row', max_span=2**14+1024)
+        mask_mc |= (((ncsb.DRAM_model == ('A1'))|(ncsb.DRAM_model == ('A2')))  \
+            & mask_span(ncsb, 'row', max_span=2**13+1024 ))
+        multi_csls, ncsb = split_on_mask(ncsb, mask_mc)
     except:
-        mutli_csls = pd.DataFrame(columns=['sid','memoryid','rankid','bankid','row','col','error_time_min','error_time_max','DRAM_model'])
+        multi_csls = make_empty_fault_df()
 
 
+    ##########################
+    # classify multi_bank
+    # -------> bank_control, potentional_sense_amp, potential_csl_column
+    ##########################
 
     #multi bank 
     # bank control, row_addr_mux
 
     # multi bank, but if it only affects at most 2K rows, then it is actually single_sense_amp
     try:
-        bank_control = multi_bank[multi_bank['col'].apply(lambda x:len(set(x))) <= 2]
-        bank_control = bank_control[bank_control.row.apply(len)>=4]
-        not_clustered_multi_bank = multi_bank[~multi_bank.index.isin(bank_control.index)]
+        mask_bc = mask_unique(multi_bank, 'col', max_count=2)
+        mask_bc &= (multi_bank['row'].apply(len) >= 4)
+        bank_control, not_clustered_multi_bank = split_on_mask(multi_bank, mask_bc)
     except:
-        bank_control = pd.DataFrame(columns=['sid','memoryid','rankid','bankid','row','col','error_time_min','error_time_max','DRAM_model'])
+        bank_control = make_empty_fault_df()
     try:
-        #potential_sense_amp = bank_control[bank_control.error_type != "read"]
         potential_sense_amp = bank_control.copy()
+        #potential_sense_amp = bank_control[bank_control.error_type != "read"]
         potential_positions = potential_sense_amp.groupby(['sid']).agg({'row':lambda x: sum(x.apply(len))})
+        #potential_positions = potential_sense_amp.groupby(['sid']).agg({'row':lambda x: sum(x.apply(len))})
         potential_positions.rename(columns={'row':'row_num'}, inplace=True)
         potential_sense_amp = potential_sense_amp.reset_index()
         potential_sense_amp = potential_sense_amp.merge(potential_positions, on='sid', how='left')
@@ -298,23 +385,31 @@ def make_decision(feature_vector_df,msocket = True, mrank=True):
         # potential_sense_amp = potential_sense_amp[~potential_sense_amp.sid.duplicated(keep=False)]
 
 
-        
+
         bank_control = bank_control[~bank_control.index.isin(potential_sense_amp.index)]
         bank_control = bank_control[~bank_control.index.isin(potential_csl_column.index)]
 
-    except:
-        potential_sense_amp = pd.DataFrame(columns=['sid','memoryid','rankid','bankid','row','col','error_time_min','error_time_max','DRAM_model'])
-        potential_csl_column = pd.DataFrame(columns=['sid','memoryid','rankid','bankid','row','col','error_time_min','error_time_max','DRAM_model'])
+    except Exception as e:
+        potential_sense_amp = make_empty_fault_df()
+        potential_csl_column = make_empty_fault_df()
 
-    physiclal_result =  { 'multiple_single_bit_failures':multiple_single_bit_failures,
+    physiclal_result =  { 'multiple_single_bit_failures':multiple_single_bit,
     'local_wordline':local_wordline, 'single_sense_amp':single_sense_amp, 'decoder_single_col':decoder_single_col, 'single_csl_column':single_csl_column, 'not_clustered_single_column':not_clustered_single_column,
     'single_csl_bank':single_csl_bank, 'subarray_row_decoder':subarray_row_decoder,
     'decoder_multi_col':decoder_multi_col, 'multi_socket': multi_socket, 'multi_rank':multi_rank,
-    'global_row_decoder_two_clusters':global_row_decoder_two_clusters, 'mutli_csls':mutli_csls, 'lwl_sel2':lwl_sel2, 'lwl_sel':lwl_sel, 'bank_control':bank_control, 'not_clustered_single_bank':not_clustered_single_bank, 'not_clustered_multi_bank':not_clustered_multi_bank,
+    'global_row_decoder_two_clusters':global_row_decoder_two_clusters, 'mutli_csls':multi_csls, 'lwl_sel2':lwl_sel2, 'lwl_sel':lwl_sel, 'bank_control':bank_control, 'not_clustered_single_bank':ncsb, 'not_clustered_multi_bank':not_clustered_multi_bank,
     "subarray_row_decoder_two_clusters":subarray_row_decoder_two_clusters, 'local_wordline_two_clusters':local_wordline_two_clusters,
     "consequtive_rows" : consequtive_rows,"potential_sense_amp":potential_sense_amp,"potential_csl_column":potential_csl_column}
     #retun all results
-    return logical_result,physiclal_result
+    return physiclal_result
+
+
+def make_decision(feature_vector_df, msocket = True, mrank=True):
+    logical_result = decide_logical_fault_category(feature_vector_df, msocket, mrank)
+    physical_result = decide_physical_fault_category(logical_result)
+
+    return logical_result, physical_result
+
 
 def conv_mapping(df,column_name):
     '''
@@ -397,3 +492,61 @@ def merge_dictionary(dic):
                 dic[key] = pd.concat([dic[key],dic[value]])
                 del dic[value]
     return dic
+
+
+def format_results(results_dict, output_file):
+    with open(output_file, 'w') as f:
+        for category, df in results_dict.items():
+            f.write(f"=== {category} ===\n")
+            if df.empty:
+                f.write("No entries.\n\n")
+                continue
+
+            # Group by sid and memoryid first
+            for (sid, memoryid), sub_df in df.groupby(['sid', 'memoryid']):
+                f.write(f"\nsid: {sid}\n")
+                f.write(f"memoryid: {memoryid}\n")
+
+                # Handle vectorized entries (list-type columns)
+                expanded_rows = []
+                for _, row in sub_df.iterrows():
+                    rankid = row['rankid']
+                    bankid = row['bankid']
+                    row_addr = row['row']
+                    col = row['col']
+                    etmin = row['error_time_min']
+                    etmax = row['error_time_max']
+                    model = row['DRAM_model']
+
+                    if isinstance(rankid, list):
+                        for i in range(len(rankid)):
+                            expanded_rows.append({
+                                'rankid': rankid[i],
+                                'bankid': bankid[i],
+                                'row': row_addr[i],
+                                'col': col[i],
+                                'error_time_min': etmin[i],
+                                'error_time_max': etmax[i],
+                                'DRAM_model': model
+                            })
+                    else:
+                        expanded_rows.append({
+                            'rankid': rankid,
+                            'bankid': bankid,
+                            'row': row_addr,
+                            'col': col,
+                            'error_time_min': etmin,
+                            'error_time_max': etmax,
+                            'DRAM_model': model
+                        })
+
+                expanded_df = pd.DataFrame(expanded_rows)
+
+                # Now group by (rankid, bankid)
+                for (rankid, bankid), group in expanded_df.groupby(['rankid', 'bankid']):
+                    f.write(f"\n  [rankid: {rankid}, bankid: {bankid}]\n")
+                    f.write("    row    |   col   | error_time_min       | error_time_max       | DRAM_model\n")
+                    f.write("    " + "-" * 80 + "\n")
+                    for _, r in group.iterrows():
+                        f.write(f"    {r['row']:>6} | {r['col']:>6} | {r['error_time_min']} | {r['error_time_max']} | {r['DRAM_model']}\n")
+            f.write("\n")
