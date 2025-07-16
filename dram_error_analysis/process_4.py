@@ -14,7 +14,7 @@ from utils_new import groupby_machine_informations, make_decision, generate_min_
 
 # Function to optimize the memoryid data type
 def optimize_memoryid_dtype(df):
-    df['memoryid'] = df['memoryid'].astype('int64')
+    df['memoryid'] = df['memoryid'].astype('uint8')
     return df
 
 # Function to load data and merge category

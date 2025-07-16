@@ -11,6 +11,74 @@ import swifter
 
 MAX_MAT_ROWS = 2**10
 
+def load_csv(filename):
+    '''Load csv and return a dataframe.'''
+    df = dd.read_csv(filename, dtype={'sid': 'str', 'memoryid': 'uint8', 'rankid': 'uint8', 'bankid': 'uint8', 'row': 'uint32', 'col': 'uint16', 'error_type': 'uint8', 'error_time': 'str'})
+    return df
+
+def normalize_err_time(df):
+    # choose the correct .apply() signature
+    if isinstance(df, pd.DataFrame):
+        # pandas: no meta arg
+        date = df['error_time'].apply(lambda x: '-'.join(x.split('-')[:3]))
+        date = date.apply(lambda x: x.replace('0001-01', '2019-10'))
+        date = date.apply(lambda x: x.replace('0001-02', '2019-11'))
+        date = date.apply(lambda x: x.replace('0001-03', '2019-12'))
+        date = date.apply(lambda x: x.replace('0001-04', '2020-01'))
+        date = date.apply(lambda x: x.replace('0001-05', '2020-02'))
+        date = date.apply(lambda x: x.replace('0001-06', '2020-03'))
+        date = date.apply(lambda x: x.replace('0001-07', '2020-04'))
+        date = date.apply(lambda x: x.replace('0001-08', '2020-05'))
+
+        df['error_time'] = dd.to_datetime(date)
+    else:
+        # Dask: must supply meta
+        date = df['error_time'].apply(lambda x: '-'.join(x.split('-')[:3]), meta=('error_time', 'str'))
+        date = date.apply(lambda x: x.replace('0001-01', '2019-10'), meta=('error_time', 'str'))
+        date = date.apply(lambda x: x.replace('0001-02', '2019-11'), meta=('error_time', 'str'))
+        date = date.apply(lambda x: x.replace('0001-03', '2019-12'), meta=('error_time', 'str'))
+        date = date.apply(lambda x: x.replace('0001-04', '2020-01'), meta=('error_time', 'str'))
+        date = date.apply(lambda x: x.replace('0001-05', '2020-02'), meta=('error_time', 'str'))
+        date = date.apply(lambda x: x.replace('0001-06', '2020-03'), meta=('error_time', 'str'))
+        date = date.apply(lambda x: x.replace('0001-07', '2020-04'), meta=('error_time', 'str'))
+        date = date.apply(lambda x: x.replace('0001-08', '2020-05'), meta=('error_time', 'str'))
+
+        df['error_time'] = dd.to_datetime(date)
+    return df
+
+def strip_sid_prefix(df):
+    return df.assign(sid=df['sid'].str.replace(r'^Server_', '', regex=True)
+            .astype('uint16')
+    )
+
+def split_transient_and_permanent(df):
+    # group by sid and memoryid, and calculate the min and max error_time
+    min_value = df.groupby(['sid','memoryid'])['error_time_min'].apply(lambda x: x.min())
+    max_value = df.groupby(['sid','memoryid'])['error_time_max'].apply(lambda x: x.max())
+    diff_value = ((max_value - min_value) < pd.Timedelta(24,'h')).reset_index()
+    diff_value.columns = ['sid','memoryid','diff_max_min']
+    diff_df = df.merge(diff_value, on=['sid','memoryid'], how ='left')
+
+    # classify the errors of sid & memoryid group into transient / might permanent
+    transient_df = diff_df[diff_df['diff_max_min'] == True].reset_index(drop=True)
+    potential_permanent_df = diff_df[diff_df['diff_max_min'] == False].reset_index(drop=True)
+    transient_df = transient_df.drop(columns='diff_max_min')
+    potential_permanent_df = potential_permanent_df.drop(columns='diff_max_min')
+
+    return transient_df, potential_permanent_df
+
+def extract_feature_vector(df, clustering=False):
+    if clustering:
+        feature_vector_df = df.groupby(['sid', 'memoryid']).agg({'rankid': list, 'bankid': list, 'row': list, 'col': list, 'error_time_min': list, 'error_time_max': list, 'DRAM_model': list, 'cluster': list})
+    else:
+        feature_vector_df = df.groupby(['sid', 'memoryid']).agg({'rankid': list, 'bankid': list, 'row': list, 'col': list, 'error_time_min': list, 'error_time_max': list, 'DRAM_model': list})
+    feature_vector_df['DRAM_model'] = feature_vector_df['DRAM_model'].apply(lambda x: x[0])
+    feature_vector_df = feature_vector_df.reset_index()
+    feature_vector_df = feature_vector_df[(feature_vector_df['DRAM_model']!="B2") & (feature_vector_df['DRAM_model']!="B3")]
+
+    return feature_vector_df
+
+
 def generate_min_max(df):
     df = df.groupby(['sid','memoryid', 'rankid', 'bankid', 'row', 'col'])['error_time'].agg(['min', 'max', 'count'])
     df = df.rename(columns={'min': 'error_time_min', 'max': 'error_time_max'})    

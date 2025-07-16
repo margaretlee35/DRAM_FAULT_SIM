@@ -12,7 +12,7 @@ from utils import groupby_machine_informations
 
 #load categorical data
 category = pickle.load(open('category.pkl', 'rb'))
-category.memoryid = category.memoryid.astype('int64')
+category.memoryid = category.memoryid.astype('uint8')
 
 #load data
 with open('data_df.pkl', 'rb') as f:
@@ -32,7 +32,7 @@ for _category in np.unique(category.category):
 
         
     filter_elem = category[category['category'] == _category]
-    filter_elem.memoryid = filter_elem.memoryid.astype('int64')
+    filter_elem.memoryid = filter_elem.memoryid.astype('uint8')
     filter_elem.reset_index(drop=True, inplace=True)
     filter_elem.dropna(inplace=True,axis=1)
 
