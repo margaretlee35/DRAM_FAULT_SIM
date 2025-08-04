@@ -44,18 +44,33 @@ if __name__ == '__main__':
         permanent_log_res, permanent_phy_res = make_decision(pfeature_vector_df)
 
 
-    category = pd.DataFrame(columns=['sid', 'memoryid', 'rankid', 'bankid', 'category', 'permanency'])
+    category_phy = pd.DataFrame(columns=['sid', 'memoryid', 'rankid', 'bankid', 'category', 'permanency'])
     for key in permanent_phy_res.keys():
         permanent_phy_res
         if permanent_phy_res[key].empty:
             continue
-        category = pd.concat([category, pd.DataFrame({'sid': permanent_phy_res[key]['sid'], 'memoryid': permanent_phy_res[key]['memoryid'], 'category': key, 'permanency': 'permanent'})])
+        category_phy = pd.concat([category_phy, pd.DataFrame({'sid': permanent_phy_res[key]['sid'], 'memoryid': permanent_phy_res[key]['memoryid'], 'category': key, 'permanency': 'permanent'})])
     for key in transient_phy_res.keys():
         if transient_phy_res[key].empty:
             continue
-        category = pd.concat([category, pd.DataFrame({'sid': transient_phy_res[key]['sid'], 'memoryid': transient_phy_res[key]['memoryid'], 'category': key, 'permanency': 'transient'})])
-    category.reset_index(drop=True, inplace=True)
+        category_phy = pd.concat([category_phy, pd.DataFrame({'sid': transient_phy_res[key]['sid'], 'memoryid': transient_phy_res[key]['memoryid'], 'category': key, 'permanency': 'transient'})])
+    category_phy.reset_index(drop=True, inplace=True)
     with open('category.pkl', 'wb') as f:
-        pickle.dump(category, f)
-    #with open('category1.csv', 'w') as f:
-    #    category.to_csv(f, index=False)
+        pickle.dump(category_phy, f)
+    '''
+    for cat in category_phy['category'].unique():
+        cnt = (category_phy['category'] == cat).sum()
+        print(f"{cat}")
+    '''
+
+    category_log = pd.DataFrame(columns=['sid', 'memoryid', 'rankid', 'bankid', 'category', 'permanency'])
+    for key in permanent_log_res.keys():
+        if permanent_log_res[key].empty:
+            continue
+        category_log = pd.concat([category_log, pd.DataFrame({'sid': permanent_log_res[key]['sid'], 'memoryid': permanent_log_res[key]['memoryid'], 'category': key, 'permanency': 'permanent'})])
+    for key in transient_log_res.keys():
+        if transient_log_res[key].empty:
+            continue
+        category_log = pd.concat([category_log, pd.DataFrame({'sid': transient_log_res[key]['sid'], 'memoryid': transient_log_res[key]['memoryid'], 'category': key, 'permanency': 'transient'})])
+    category_log.reset_index(drop=True, inplace=True)
+    category_log.to_csv('category_log.csv', index=False)
