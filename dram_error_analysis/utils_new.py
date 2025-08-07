@@ -30,7 +30,6 @@ def normalize_err_time(df):
         date = date.apply(lambda x: x.replace('0001-07', '2020-04'))
         date = date.apply(lambda x: x.replace('0001-08', '2020-05'))
 
-        df['error_time'] = dd.to_datetime(date)
     else:
         # Dask: must supply meta
         date = df['error_time'].apply(lambda x: '-'.join(x.split('-')[:3]), meta=('error_time', 'str'))
@@ -43,7 +42,7 @@ def normalize_err_time(df):
         date = date.apply(lambda x: x.replace('0001-07', '2020-04'), meta=('error_time', 'str'))
         date = date.apply(lambda x: x.replace('0001-08', '2020-05'), meta=('error_time', 'str'))
 
-        df['error_time'] = dd.to_datetime(date)
+    df['error_time'] = dd.to_datetime(date)
     return df
 
 def strip_sid_prefix(df):
@@ -79,7 +78,9 @@ def extract_feature_vector(df, clustering=False):
     return feature_vector_df
 
 
-def generate_min_max(df):
+def generate_min_max(df, drop_hour=False):
+    if drop_hour:
+        df['error_time'] = df['error_time'].dt.floor('d')
     df = df.groupby(['sid','memoryid', 'rankid', 'bankid', 'row', 'col'])['error_time'].agg(['min', 'max', 'count'])
     df = df.rename(columns={'min': 'error_time_min', 'max': 'error_time_max'})    
     df = df.reset_index()

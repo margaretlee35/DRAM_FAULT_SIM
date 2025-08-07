@@ -67,6 +67,7 @@ def preprocess_data(df_original, category, trouble_tickets):
         feature_vector_df['rankid'] = feature_vector_df['rankid_x']
         feature_vector_df = groupby_machine_informations(feature_vector_df)
         feature_vector_df = feature_vector_df.reset_index(drop=True)
+        feature_vector_df['DRAM_model'] = feature_vector_df['DRAM_model_x']
         feature_vector_df = feature_vector_df[(feature_vector_df['DRAM_model']!="B2") & (feature_vector_df['DRAM_model']!="B3")]
         feature_vector_df = feature_vector_df.reset_index(drop=True)
 
