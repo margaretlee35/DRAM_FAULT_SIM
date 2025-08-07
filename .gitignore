@@ -1,4 +1,4 @@
-dram_error_analysis/mcelog.csv
+dram_error_analysis/mcelog*
 dram_error_analysis/kmeans_no_msocket*
 dram_error_analysis/__pycache__
 dram_error_analysis/*.pkl
